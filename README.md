@@ -1,29 +1,32 @@
 # Deadline countdown (Angular 17+)
 
-Copy `deadline.service.ts` and `countdown.component.ts` into your project and use `<app-countdown />`.
-Requires `provideHttpClient()` in your app config.
+`GET /api/deadline` → `{ secondsLeft }`, rendered as **"Seconds left to deadline: X"**, updated every second.
 
-Design choices
-- One HTTP call (`GET /api/deadline`), then the countdown is computed locally.
-- Value is derived from `performance.now()` rather than decremented, so it stays accurate when the tab is throttled or the system clock changes.
-- Timer runs outside NgZone and only this component is re-rendered (`OnPush` + `detectChanges`).
-- Timer completes at 0 (never negative); `distinctUntilChanged` avoids redundant renders.
-- Subscriptions are cleaned up with `takeUntilDestroyed`; loading and error (with retry) states included.
+## Use
+Copy `src/countdown.ts`, `src/deadline.service.ts`, `src/countdown.component.ts` into your project, add `provideHttpClient()` to your app config, and use `<app-countdown />`.
 
-## Tests (17, all passing)
-Run with Jest (`jest-preset-angular`, see `jest.config.js`). Also verified with a strict AOT compile (`ngc -p tsconfig.aot.json`, `strictTemplates`) on Angular 17 and 19.
-
-| Requirement | Verified by |
+## Files
+| File | Role |
 |---|---|
-| Retrieves data from `/api/deadline` | service spec + real HTTP server integration test |
-| Shows "Seconds left to deadline: X" | component spec |
-| X updates every second | fake-clock test and a real 5-second wall-clock run (5,4,3,2,1,0, no skips) |
-| Performance: single request | `http.verify()` and server hit counter = 1 |
-| Performance: OnPush, standalone | contract test |
-| Performance: no app-wide change detection per tick | `onMicrotaskEmpty` never fires |
-| Correct when tab throttled | clock-jump test |
-| Stops at 0, never negative, no idle timer | fakeAsync pending-timer check |
-| Cleanup (destroy, cancel in-flight request, overlapping loads) | component specs |
-| Error handling and retry | component spec |
-| Multiple instances independent | contract test |
-| Copy-paste into other projects | strict AOT compile on Angular 17 and 19 |
+| `countdown.ts` | Framework-free timing engine (no Angular, no RxJS). All timing logic; unit-tested with a fake clock. |
+| `deadline.service.ts` | Fetches the deadline once per app, shares/caches it, converts it to a monotonic deadline. |
+| `countdown.component.ts` | Thin standalone `OnPush` view. |
+
+## Performance decisions
+- **One HTTP request per app.** The deadline never changes, so the service caches it (`shareReplay`); any number of components share it. A failed request is not cached (retry works).
+- **Deadline, not counter.** The value is computed from `performance.now()` (monotonic), so tab throttling, timer jitter and system-clock changes cannot cause drift.
+- **One timer, scheduled for the exact moment the number changes** (not a fixed `setInterval(1000)`): no drift, no wasted or duplicate ticks, and nothing scheduled after 0.
+- **Paused while the tab is hidden**; recomputed in a single step when it becomes visible.
+- **Outside NgZone + `OnPush` + `detectChanges()`** on this component only: a tick never triggers an app-wide change-detection pass.
+- **Latency compensation:** the server's answer is anchored to the midpoint of the request, removing about half the round-trip from the countdown.
+- **SSR-safe:** no request and no timers on the server (they would keep the app from stabilising).
+- Rejects invalid payloads (non-finite `secondsLeft`); shows loading and error-with-retry states; clamps at 0.
+
+## Tests
+`npm test` (Jest + `jest-preset-angular`)
+
+| Spec | Covers |
+|---|---|
+| `countdown.spec.ts` | Engine: 5→0 with no skips/repeats, exactly one pending timer, none after 0, fractional starts, past deadline, throttled-tab clock jump, early timer, hidden/visible, stop (also from inside callback), independent instances, real 3-second wall-clock run |
+| `deadline.service.spec.ts` | One request shared and cached, latency midpoint, invalid payload, failure not cached |
+| `countdown.component.spec.ts` | Text and per-second updates, no timer left at 0/destroy, throttled tab, no app-wide CD, loading, error + retry, visibility pause |
